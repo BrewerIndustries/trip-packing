@@ -32,9 +32,13 @@ Packing lists by trip type. Part of the Jarvis app family; **tailnet-only**.
 
 ## Integrations
 
-`GET /api/summary` returns glanceable state for the HUD and Jarvis: the trip in progress or
-the next upcoming one, its packed/total counts and the unpacked items.
-(`?today=YYYY-MM-DD` overrides the date.)
+`GET /api/summary` returns glanceable state: the trip in progress or the next upcoming one,
+its packed/total counts and the unpacked items. (`?today=YYYY-MM-DD` overrides the date.)
+
+- **HUD**: the "Next trip" card (jarvis-hud `TripCard`) reads `/api/summary`. It shows while a
+  trip is under way or starts within 14 days, and tapping it opens the checklist.
+- **Jarvis**: the `packing` tool (Jarvis `tools/packing.py`) uses the full API: what's left,
+  add, pack and unpack, create a trip, add a list.
 
 ## Stack
 

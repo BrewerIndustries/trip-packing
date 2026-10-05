@@ -1,0 +1,12 @@
+{
+  "id": "packing",
+  "name": "Trip Packing",
+  "category": "standalone",
+  "description": "Packing lists by trip type. Reusable list types (Toiletries, Beach, Work…) are mapped to the trip types that require them; a new trip copies those lists in as its own checklist, with per-day items scaled to the trip length, ad hoc extras, and a one-tap pull of later list changes. Tailnet-only.",
+  "tech": ["Next.js 16", "React 19", "TypeScript", "Tailwind CSS v4", "SQLite (better-sqlite3)"],
+  "status": { "prod": "live", "dev": "live" },
+  "deploy": {
+    "prod": { "port": 4840, "https": true, "url": "https://packing.dabrewer.dev" },
+    "dev":  { "port": 4850, "https": true, "url": "https://packing.dev.dabrewer.dev" }
+  }
+}

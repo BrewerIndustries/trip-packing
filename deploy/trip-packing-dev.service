@@ -1,0 +1,17 @@
+[Unit]
+Description=Trip Packing (Next.js) — DEV
+After=network.target
+
+[Service]
+Type=simple
+User=dan
+WorkingDirectory=/opt/trip-packing-dev
+Environment=NODE_ENV=production
+# Optional settings (JARVIS_ENV=dev on dev only, PACKING_DB_PATH) live in .env.
+EnvironmentFile=-/opt/trip-packing-dev/.env
+ExecStart=/opt/trip-packing-dev/node_modules/.bin/next start -p 4850
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
