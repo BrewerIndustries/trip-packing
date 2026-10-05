@@ -1,0 +1,416 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "@/lib/api";
+import { formatRange, tripDays } from "@/lib/trip-math";
+import type { ListType, Trip, TripItem, TripList } from "@/lib/types";
+import { Chip, Empty, Label, Modal, Progress } from "./ui";
+import type { SyncPreview } from "@/lib/db";
+
+const EXTRAS = "__extras";
+
+export default function TripView({ initial, listTypes }: { initial: Trip; listTypes: ListType[] }) {
+  const router = useRouter();
+  const [trip, setTrip] = useState(initial);
+  const [hidePacked, setHidePacked] = useState(false);
+  const [editingItem, setEditingItem] = useState<TripItem | null>(null);
+  const [editingTrip, setEditingTrip] = useState(false);
+  const [addingList, setAddingList] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const [sync, setSync] = useState<SyncPreview | null>(null);
+  const [error, setError] = useState("");
+
+  const reload = useCallback(async () => {
+    const { trip: t } = await api<{ trip: Trip }>(`/api/trips/${initial.id}`);
+    setTrip(t);
+    setSync(await api<SyncPreview>(`/api/trips/${initial.id}/sync`));
+  }, [initial.id]);
+
+  // Check once on open whether the master lists grew since this trip was made.
+  useEffect(() => {
+    api<SyncPreview>(`/api/trips/${initial.id}/sync`).then(setSync).catch(() => {});
+  }, [initial.id]);
+
+  const run = useCallback(async (fn: () => Promise<unknown>) => {
+    setError("");
+    try {
+      await fn();
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+      await reload().catch(() => {});
+    }
+  }, [reload]);
+
+  const packed = trip.items.filter((i) => i.packed).length;
+  const total = trip.items.length;
+  const done = total > 0 && packed === total;
+  const days = tripDays(trip.startDate, trip.endDate);
+
+  const sections = useMemo(() => {
+    const out: { list: TripList | null; key: string; items: TripItem[] }[] = trip.lists.map((l) => ({
+      list: l, key: l.id, items: trip.items.filter((i) => i.tripListId === l.id),
+    }));
+    out.push({ list: null, key: EXTRAS, items: trip.items.filter((i) => i.tripListId === null) });
+    return out;
+  }, [trip]);
+
+  async function toggle(item: TripItem) {
+    // Optimistic: flip locally, then persist; roll back via reload on failure.
+    setTrip((t) => ({ ...t, items: t.items.map((i) => (i.id === item.id ? { ...i, packed: !i.packed } : i)) }));
+    try {
+      await api(`/api/trip-items/${item.id}`, "PATCH", { packed: !item.packed });
+    } catch (e) {
+      setError((e as Error).message);
+      reload().catch(() => {});
+    }
+  }
+
+  const pendingSync = (sync?.newItems.length ?? 0) + (sync?.newLists.length ?? 0);
+  const attachedIds = new Set(trip.lists.map((l) => l.listTypeId));
+
+  return (
+    <div>
+      <Link href="/" className="text-[13px] font-semibold text-[var(--muted)] hover:text-[var(--ink)]">← Trips</Link>
+
+      <div className="mt-2 flex items-start gap-3">
+        <div className="text-[38px] leading-none">{trip.tripTypeIcon || "🧳"}</div>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-bold leading-tight tracking-tight">{trip.name}</h1>
+          <p className="text-[14px] text-[var(--muted)]">
+            {[trip.destination, formatRange(trip.startDate, trip.endDate),
+              trip.startDate ? `${days} day${days === 1 ? "" : "s"}` : "", trip.tripTypeName]
+              .filter(Boolean).join(" · ") || "No details yet"}
+          </p>
+          {trip.note && <p className="mt-1 whitespace-pre-wrap text-[14px]">{trip.note}</p>}
+        </div>
+        <div className="relative">
+          <button className="icon-btn" onClick={() => setMenu((m) => !m)} aria-label="Trip menu">⋯</button>
+          {menu && (
+            <div className="card absolute right-0 z-30 mt-1 w-52 overflow-hidden p-1 shadow-lg" onMouseLeave={() => setMenu(false)}>
+              {[
+                ["✏️ Edit trip", () => setEditingTrip(true)],
+                ["➕ Add a list", () => setAddingList(true)],
+                ["✓ Mark all packed", () => run(() => api(`/api/trips/${trip.id}/pack-all`, "POST", { packed: true }))],
+                ["↺ Unpack all", () => run(() => api(`/api/trips/${trip.id}/pack-all`, "POST", { packed: false }))],
+                ["⧉ Duplicate trip", async () => {
+                  const { trip: copy } = await api<{ trip: Trip }>(`/api/trips/${trip.id}/duplicate`, "POST", {});
+                  router.push(`/trips/${copy.id}`);
+                }],
+                ["🗑 Delete trip", async () => {
+                  if (!confirm(`Delete "${trip.name}"? This can't be undone.`)) return;
+                  await api(`/api/trips/${trip.id}`, "DELETE");
+                  router.push("/");
+                  router.refresh();
+                }],
+              ].map(([label, fn]) => (
+                <button
+                  key={label as string}
+                  className={`block w-full rounded-lg px-3 py-2 text-left text-[14px] hover:bg-[var(--sunk)] ${
+                    (label as string).includes("Delete") ? "text-[var(--danger)]" : ""
+                  }`}
+                  onClick={() => { setMenu(false); (fn as () => void)(); }}
+                >
+                  {label as string}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className={`card mt-4 p-4 ${done ? "all-packed" : ""}`}>
+        <div className="mb-2 flex items-baseline justify-between">
+          <span className="text-[15px] font-bold">
+            {done ? "🎉 All packed!" : `${packed} of ${total} packed`}
+          </span>
+          <label className="flex items-center gap-2 text-[13px] text-[var(--muted)]">
+            <input type="checkbox" checked={hidePacked} onChange={(e) => setHidePacked(e.target.checked)} />
+            Hide packed
+          </label>
+        </div>
+        <Progress packed={packed} total={total} big />
+      </div>
+
+      {pendingSync > 0 && sync && (
+        <div className="card mt-3 flex flex-wrap items-center gap-3 border-[var(--accent)] p-3 text-[14px]">
+          <span className="flex-1">
+            Your lists changed since this trip was made:{" "}
+            {[
+              sync.newItems.length && `${sync.newItems.length} new item${sync.newItems.length === 1 ? "" : "s"}`,
+              sync.newLists.length && `${sync.newLists.map((l) => l.name).join(", ")} now required`,
+            ].filter(Boolean).join(" · ")}
+          </span>
+          <button className="btn btn-primary btn-sm" onClick={() => run(() => api(`/api/trips/${trip.id}/sync`, "POST"))}>
+            Pull in updates
+          </button>
+        </div>
+      )}
+
+      {error && <p className="mt-3 text-[13px] text-[var(--danger)]">{error}</p>}
+
+      <QuickAdd trip={trip} onAdd={(b) => run(() => api(`/api/trips/${trip.id}/items`, "POST", b))} />
+
+      {total === 0 && trip.lists.length === 0 && (
+        <div className="mt-4">
+          <Empty>Nothing on this trip yet. Add items above, or <button className="font-semibold text-[var(--accent)]" onClick={() => setAddingList(true)}>add a list</button>.</Empty>
+        </div>
+      )}
+
+      <div className="mt-4 space-y-4">
+        {sections.map(({ list, key, items }) => {
+          if (!list && items.length === 0) return null;
+          const shown = hidePacked ? items.filter((i) => !i.packed) : items;
+          const secPacked = items.filter((i) => i.packed).length;
+          return (
+            <section key={key} className="card overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-2.5">
+                {list ? <Chip icon={list.icon} name={list.name} color={list.color} /> : <Chip icon="✨" name="Extras" color="slate" />}
+                <span className="text-[12px] font-semibold text-[var(--muted)]">
+                  {secPacked}/{items.length}
+                </span>
+                {list && (
+                  <button
+                    className="icon-btn ml-auto !h-7 !w-7 text-[13px]"
+                    aria-label={`Remove ${list.name} from this trip`}
+                    title="Remove this list from the trip"
+                    onClick={() => {
+                      if (confirm(`Remove "${list.name}" and its ${items.length} items from this trip? Your master list is not affected.`)) {
+                        run(() => api(`/api/trip-lists/${list.id}`, "DELETE"));
+                      }
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {shown.length === 0 ? (
+                <p className="px-4 py-3 text-[13px] text-[var(--muted)]">
+                  {items.length === 0 ? "This list is empty." : "All packed ✓"}
+                </p>
+              ) : (
+                <ul>
+                  {shown.map((i) => (
+                    <li key={i.id} className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-2 last:border-b-0">
+                      <button
+                        className={`check ${i.packed ? "on" : ""}`}
+                        onClick={() => toggle(i)}
+                        aria-label={`${i.packed ? "Unpack" : "Pack"} ${i.name}`}
+                        aria-pressed={i.packed}
+                      >
+                        {i.packed && "✓"}
+                      </button>
+                      <button className="min-w-0 flex-1 py-1 text-left" onClick={() => toggle(i)}>
+                        <span className={`text-[15px] ${i.packed ? "packed-name" : ""}`}>{i.name}</span>
+                        {i.qty > 1 && <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">×{i.qty}</span>}
+                        {i.perDay != null && <span className="ml-1 text-[11px] text-[var(--muted)]" title={`${i.perDay} per day`}>/day</span>}
+                        {i.note && <span className="block truncate text-[12px] text-[var(--muted)]">{i.note}</span>}
+                      </button>
+                      <button className="icon-btn" onClick={() => setEditingItem(i)} aria-label={`Edit ${i.name}`}>✎</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 text-center">
+        <button className="btn" onClick={() => setAddingList(true)}>+ Add a list to this trip</button>
+      </div>
+
+      {editingItem && (
+        <ItemModal
+          item={editingItem}
+          trip={trip}
+          listTypes={listTypes}
+          onClose={() => setEditingItem(null)}
+          onDone={async (fn) => { setEditingItem(null); await run(fn); }}
+        />
+      )}
+      {editingTrip && (
+        <EditTripModal trip={trip} onClose={() => setEditingTrip(false)} onSave={async (b) => {
+          setEditingTrip(false);
+          await run(() => api(`/api/trips/${trip.id}`, "PATCH", b));
+        }} />
+      )}
+      {addingList && (
+        <Modal title="Add a list to this trip" onClose={() => setAddingList(false)}>
+          {listTypes.filter((l) => !attachedIds.has(l.id)).length === 0 ? (
+            <p className="text-[14px] text-[var(--muted)]">Every list is already on this trip. Make new ones on the <Link className="text-[var(--accent)]" href="/lists">Lists</Link> tab.</p>
+          ) : (
+            <div className="grid gap-2">
+              {listTypes.filter((l) => !attachedIds.has(l.id)).map((l) => (
+                <button
+                  key={l.id}
+                  className="flex items-center justify-between rounded-xl border border-[var(--line)] px-3 py-2.5 text-left hover:border-[var(--accent)]"
+                  onClick={async () => {
+                    setAddingList(false);
+                    await run(() => api(`/api/trips/${trip.id}/lists`, "POST", { listTypeId: l.id }));
+                  }}
+                >
+                  <Chip icon={l.icon} name={l.name} color={l.color} />
+                  <span className="text-[13px] text-[var(--muted)]">{l.items.length} items</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function QuickAdd({ trip, onAdd }: { trip: Trip; onAdd: (b: { name: string; qty: number; tripListId: string | null }) => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [qty, setQty] = useState(1);
+  const [section, setSection] = useState(EXTRAS);
+  return (
+    <form
+      className="card mt-3 flex flex-wrap items-center gap-2 p-2"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (!name.trim()) return;
+        await onAdd({ name, qty, tripListId: section === EXTRAS ? null : section });
+        setName("");
+        setQty(1);
+      }}
+    >
+      <input
+        className="field min-w-0 flex-1 basis-40"
+        placeholder="Add an item to this trip…"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        aria-label="New item"
+      />
+      <input
+        type="number" min={1} max={999} className="field !w-16" value={qty}
+        onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} aria-label="Quantity"
+      />
+      <select className="field !w-auto max-w-[40%]" value={section} onChange={(e) => setSection(e.target.value)} aria-label="Section">
+        <option value={EXTRAS}>✨ Extras</option>
+        {trip.lists.map((l) => <option key={l.id} value={l.id}>{l.icon} {l.name}</option>)}
+      </select>
+      <button className="btn btn-primary" disabled={!name.trim()}>Add</button>
+    </form>
+  );
+}
+
+function ItemModal({
+  item, trip, listTypes, onClose, onDone,
+}: {
+  item: TripItem; trip: Trip; listTypes: ListType[]; onClose: () => void;
+  onDone: (fn: () => Promise<unknown>) => Promise<void>;
+}) {
+  const [name, setName] = useState(item.name);
+  const [qty, setQty] = useState(item.qty);
+  const [note, setNote] = useState(item.note);
+  const section = trip.lists.find((l) => l.id === item.tripListId);
+  const [promoteTo, setPromoteTo] = useState(section?.listTypeId ?? listTypes[0]?.id ?? "");
+
+  return (
+    <Modal title="Edit item" onClose={onClose}>
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onDone(() => api(`/api/trip-items/${item.id}`, "PATCH", { name, qty, note }));
+        }}
+      >
+        <label className="block"><Label>Name</Label>
+          <input className="field" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <label className="block"><Label>Quantity</Label>
+          <input type="number" min={1} max={999} className="field" value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
+          {item.perDay != null && (
+            <span className="mt-1 block text-[12px] text-[var(--muted)]">
+              {item.perDay}/day × trip length. Changing it fixes the quantity for this trip.
+            </span>
+          )}
+        </label>
+        <label className="block"><Label>Note</Label>
+          <input className="field" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" />
+        </label>
+
+        {item.sourceItemId === null && listTypes.length > 0 && (
+          <div className="rounded-xl bg-[var(--sunk)] p-3">
+            <Label>Save for future trips</Label>
+            <div className="flex gap-2">
+              <select className="field min-w-0 flex-1" value={promoteTo} onChange={(e) => setPromoteTo(e.target.value)}>
+                {listTypes.map((l) => <option key={l.id} value={l.id}>{l.icon} {l.name}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onDone(() => api(`/api/trip-items/${item.id}/promote`, "POST", { listTypeId: promoteTo }))}
+              >
+                Add to list
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={() => onDone(() => api(`/api/trip-items/${item.id}`, "DELETE"))}
+          >
+            Delete
+          </button>
+          <div className="flex gap-2">
+            <button type="button" className="btn" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary">Save</button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function EditTripModal({
+  trip, onClose, onSave,
+}: { trip: Trip; onClose: () => void; onSave: (b: Record<string, unknown>) => void }) {
+  const [name, setName] = useState(trip.name);
+  const [destination, setDestination] = useState(trip.destination);
+  const [startDate, setStart] = useState(trip.startDate ?? "");
+  const [endDate, setEnd] = useState(trip.endDate ?? "");
+  const [note, setNote] = useState(trip.note);
+  return (
+    <Modal title="Edit trip" onClose={onClose}>
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSave({ name, destination, startDate: startDate || null, endDate: endDate || null, note });
+        }}
+      >
+        <label className="block"><Label>Name</Label>
+          <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label className="block"><Label>Destination</Label>
+          <input className="field" value={destination} onChange={(e) => setDestination(e.target.value)} />
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block min-w-0"><Label>Leave</Label>
+            <input type="date" className="field" value={startDate} onChange={(e) => setStart(e.target.value)} />
+          </label>
+          <label className="block min-w-0"><Label>Return</Label>
+            <input type="date" className="field" value={endDate} min={startDate || undefined} onChange={(e) => setEnd(e.target.value)} />
+          </label>
+        </div>
+        <p className="text-[12px] text-[var(--muted)]">Changing dates re-scales per-day items (socks, underwear…).</p>
+        <label className="block"><Label>Notes</Label>
+          <textarea className="field" rows={3} value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

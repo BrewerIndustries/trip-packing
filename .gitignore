@@ -1,0 +1,15 @@
+.DS_Store
+/node_modules
+/.next
+/out
+/build
+*.tsbuildinfo
+next-env.d.ts
+
+# Local data + secrets (audio bytes + SQLite live here; server-only)
+/data/*.db
+/data/*.db-*
+/data/sounds
+.env
+.env.local
+.env*.local
