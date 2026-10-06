@@ -4,10 +4,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import { formatRange, tripDays } from "@/lib/trip-math";
+import { fmtAmount, formatRange, tripDays } from "@/lib/trip-math";
 import type { ListType, Trip, TripItem, TripList } from "@/lib/types";
 import { Chip, Empty, Label, Modal, Progress, QtyField } from "./ui";
 import type { SyncPreview } from "@/lib/db";
+import type { Suggestion } from "@/lib/suggest";
+import { SwipeRow, UndoToast, useDeferredDelete } from "./swipe";
 
 const EXTRAS = "__extras";
 
@@ -44,18 +46,25 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
     }
   }, [reload]);
 
-  const packed = trip.items.filter((i) => i.packed).length;
-  const total = trip.items.length;
+  // Swipe-to-delete: the row disappears now; the DELETE goes out after the Undo window.
+  const del = useDeferredDelete(useCallback(async (id: string) => {
+    await fetch(`/api/trip-items/${id}`, { method: "DELETE", keepalive: true });
+    reload().catch(() => {});
+  }, [reload]));
+  const items = useMemo(() => trip.items.filter((i) => i.id !== del.pendingId), [trip.items, del.pendingId]);
+
+  const packed = items.filter((i) => i.packed).length;
+  const total = items.length;
   const done = total > 0 && packed === total;
   const days = tripDays(trip.startDate, trip.endDate);
 
   const sections = useMemo(() => {
     const out: { list: TripList | null; key: string; items: TripItem[] }[] = trip.lists.map((l) => ({
-      list: l, key: l.id, items: trip.items.filter((i) => i.tripListId === l.id),
+      list: l, key: l.id, items: items.filter((i) => i.tripListId === l.id),
     }));
-    out.push({ list: null, key: EXTRAS, items: trip.items.filter((i) => i.tripListId === null) });
+    out.push({ list: null, key: EXTRAS, items: items.filter((i) => i.tripListId === null) });
     return out;
-  }, [trip]);
+  }, [trip.lists, items]);
 
   async function toggle(item: TripItem) {
     // Optimistic: flip locally, then persist; roll back via reload on failure.
@@ -153,6 +162,15 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
 
       <QuickAdd trip={trip} onAdd={(b) => run(() => api(`/api/trips/${trip.id}/items`, "POST", b))} />
 
+      <Suggestions
+        trip={trip}
+        onAdd={(b) => run(() => api(`/api/trips/${trip.id}/items`, "POST", b))}
+        onAddList={(name) => {
+          const lt = listTypes.find((l) => l.name === name);
+          return lt ? run(() => api(`/api/trips/${trip.id}/lists`, "POST", { listTypeId: lt.id })) : Promise.resolve();
+        }}
+      />
+
       {total === 0 && trip.lists.length === 0 && (
         <div className="mt-4">
           <Empty>Nothing on this trip yet. Add items above, or <button className="font-semibold text-[var(--accent)]" onClick={() => setAddingList(true)}>add a list</button>.</Empty>
@@ -193,7 +211,9 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
               ) : (
                 <ul>
                   {shown.map((i) => (
-                    <li key={i.id} className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-2 last:border-b-0">
+                    <SwipeRow key={i.id} label={i.name} onDelete={() => del.remove(i.id, i.name)}
+                      className="border-b border-[var(--line)] last:border-b-0">
+                     <div className="flex items-center gap-3 px-4 py-2">
                       <button
                         className={`check ${i.packed ? "on" : ""}`}
                         onClick={() => toggle(i)}
@@ -206,14 +226,15 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
                         <span className={`text-[15px] ${i.packed ? "packed-name" : ""}`}>{i.name}</span>
                         {(i.qty > 1 || i.perDay != null) && <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">×{i.qty}</span>}
                         {i.perDay != null && (
-                          <span className="ml-1.5 rounded bg-[var(--sunk)] px-1 py-px text-[11px] font-semibold text-[var(--muted)]" title={`${i.perDay} per day × ${days} days`}>
-                            {i.perDay}/day
+                          <span className="ml-1.5 rounded bg-[var(--sunk)] px-1 py-px text-[11px] font-semibold text-[var(--muted)]" title={`${fmtAmount(i.perDay)} per day × ${days} days, rounded up`}>
+                            {fmtAmount(i.perDay)}/day
                           </span>
                         )}
                         {i.note && <span className="block truncate text-[12px] text-[var(--muted)]">{i.note}</span>}
                       </button>
                       <button className="icon-btn" onClick={() => setEditingItem(i)} aria-label={`Edit ${i.name}`}>✎</button>
-                    </li>
+                     </div>
+                    </SwipeRow>
                   ))}
                 </ul>
               )}
@@ -225,6 +246,8 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
       <div className="mt-4 text-center">
         <button className="btn" onClick={() => setAddingList(true)}>+ Add a list to this trip</button>
       </div>
+
+      {del.pending && <UndoToast label={del.pending.label} onUndo={del.undo} />}
 
       {editingItem && (
         <ItemModal
@@ -301,7 +324,7 @@ function QuickAdd({ trip, onAdd }: {
       </select>
       <div className="flex basis-full items-center gap-2">
         <div className="min-w-0 flex-1">
-          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={setPerDay} days={tripDays(trip.startDate, trip.endDate)} />
+          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={(b) => { setPerDay(b); if (!b) setQty((q) => Math.max(1, Math.ceil(q))); }} days={tripDays(trip.startDate, trip.endDate)} />
         </div>
         <button className="btn btn-primary self-start" disabled={!name.trim()}>Add</button>
       </div>
@@ -324,7 +347,8 @@ function ItemModal({
   // 8 (count) on a 4-day trip ↔ 2 per day.
   const switchMode = (toPerDay: boolean) => {
     if (toPerDay === perDay) return;
-    setQty((q) => (toPerDay ? Math.max(1, Math.round(q / days)) : q * days));
+    // Per day is exact now (8 on 16 days → 0.5/day); back to a count rounds up.
+    setQty((q) => (toPerDay ? Math.max(0.1, Math.round((q / days) * 100) / 100) : Math.max(1, Math.ceil(q * days - 1e-9))));
     setPerDay(toPerDay);
   };
   const section = trip.lists.find((l) => l.id === item.tripListId);
@@ -429,5 +453,95 @@ function EditTripModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/** "Suggested" — things from your past trips and common sense that this trip lacks. */
+function Suggestions({ trip, onAdd, onAddList }: {
+  trip: Trip;
+  onAdd: (b: { name: string; qty: number; perDay: boolean; tripListId: string | null }) => Promise<void>;
+  onAddList: (listName: string) => Promise<void>;
+}) {
+  const [list, setList] = useState<Suggestion[] | null>(null);
+  const [open, setOpen] = useState(true);
+  const [dismissedAny, setDismissedAny] = useState(false);
+  // Refetch whenever the trip's contents change (an add removes its suggestion).
+  const fingerprint = trip.items.map((i) => i.name).join("|") + trip.lists.map((l) => l.id).join("|");
+
+  useEffect(() => {
+    let alive = true;
+    api<{ suggestions: Suggestion[] }>(`/api/trips/${trip.id}/suggestions`)
+      .then((r) => { if (alive) setList(r.suggestions); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [trip.id, fingerprint]);
+
+  if (!list || (list.length === 0 && !dismissedAny)) return null;
+
+  const dismiss = async (s: Suggestion) => {
+    setList((l) => l?.filter((x) => x.key !== s.key) ?? null);
+    setDismissedAny(true);
+    await api(`/api/trips/${trip.id}/suggestions`, "POST", { dismiss: s.key }).catch(() => {});
+  };
+  const add = async (s: Suggestion) => {
+    setList((l) => l?.filter((x) => x.key !== s.key) ?? null);
+    if (s.kind === "list" && s.listName) return onAddList(s.listName);
+    const section = s.listName ? trip.lists.find((l) => l.name === s.listName) : undefined;
+    await onAdd({ name: s.name, qty: s.qty, perDay: s.perDay, tripListId: section?.id ?? null });
+  };
+  const restore = async () => {
+    await api(`/api/trips/${trip.id}/suggestions`, "DELETE").catch(() => {});
+    setDismissedAny(false);
+    const r = await api<{ suggestions: Suggestion[] }>(`/api/trips/${trip.id}/suggestions`);
+    setList(r.suggestions);
+  };
+
+  return (
+    <section className="card mt-3 overflow-hidden">
+      <button
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span className="text-[15px] font-bold">💡 Suggested</span>
+        <span className="text-[12px] font-semibold text-[var(--muted)]">{list.length}</span>
+        <span className="ml-auto text-[12px] text-[var(--muted)]">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <>
+          {list.length === 0 ? (
+            <p className="border-t border-[var(--line)] px-4 py-3 text-[13px] text-[var(--muted)]">Nothing else to suggest.</p>
+          ) : (
+            <ul className="border-t border-[var(--line)]">
+              {list.map((s) => (
+                <li key={s.key} className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-2 last:border-b-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[15px]">
+                      {s.kind === "list" && <span aria-hidden>📋 </span>}
+                      {s.name}
+                      {(s.qty > 1 || s.perDay) && (
+                        <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">{s.perDay ? `${fmtAmount(s.qty)}/day` : `×${s.qty}`}</span>
+                      )}
+                    </div>
+                    <div className="line-clamp-2 text-[12px] leading-snug text-[var(--muted)]">
+                      {s.source === "history" ? "🕘 " : ""}{s.reason}
+                    </div>
+                  </div>
+                  <button className="btn btn-sm" onClick={() => add(s)} aria-label={`Add ${s.name}`}>
+                    {s.kind === "list" ? "+ Add list" : "+ Add"}
+                  </button>
+                  <button className="icon-btn" onClick={() => dismiss(s)} aria-label={`Dismiss ${s.name}`} title="Not for this trip">✕</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {dismissedAny && (
+            <div className="border-t border-[var(--line)] px-4 py-2 text-right">
+              <button className="text-[12px] font-semibold text-[var(--accent)]" onClick={restore}>Show dismissed</button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }

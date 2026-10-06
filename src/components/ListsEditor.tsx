@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
 import type { ColorKey, ListItem, ListType, TripType } from "@/lib/types";
 import { Chip, ColorPicker, Empty, IconPicker, Label, Modal, QtyField, qtyLabel } from "./ui";
+import { SwipeRow, UndoToast, useDeferredDelete } from "./swipe";
 
 export default function ListsEditor({ initial, tripTypes }: { initial: ListType[]; tripTypes: TripType[] }) {
   const [lists, setLists] = useState(initial);
@@ -18,6 +19,12 @@ export default function ListsEditor({ initial, tripTypes }: { initial: ListType[
     try { await fn(); } catch (e) { setError((e as Error).message); }
     await reload().catch(() => {});
   }, [reload]);
+
+  // Swipe-to-delete with Undo: hidden now, deleted after the Undo window.
+  const del = useDeferredDelete(useCallback(async (id: string) => {
+    await fetch(`/api/list-items/${id}`, { method: "DELETE", keepalive: true });
+    reload().catch(() => {});
+  }, [reload]));
 
   function move(idx: number, dir: -1 | 1) {
     const j = idx + dir;
@@ -52,9 +59,13 @@ export default function ListsEditor({ initial, tripTypes }: { initial: ListType[
             onMove={(d) => move(idx, d)}
             onEdit={() => setEditing(l)}
             run={run}
+            hiddenId={del.pendingId}
+            onSwipeDelete={del.remove}
           />
         ))}
       </div>
+
+      {del.pending && <UndoToast label={del.pending.label} onUndo={del.undo} />}
 
       {editing && (
         <ListTypeModal
@@ -80,11 +91,13 @@ export default function ListsEditor({ initial, tripTypes }: { initial: ListType[
 }
 
 function ListCard({
-  list, tripTypes, first, last, onMove, onEdit, run,
+  list, tripTypes, first, last, onMove, onEdit, run, hiddenId, onSwipeDelete,
 }: {
   list: ListType; tripTypes: TripType[]; first: boolean; last: boolean;
   onMove: (d: -1 | 1) => void; onEdit: () => void; run: (fn: () => Promise<unknown>) => Promise<void>;
+  hiddenId: string | null; onSwipeDelete: (id: string, label: string) => void;
 }) {
+  const items = list.items.filter((i) => i.id !== hiddenId);
   const [name, setName] = useState("");
   const [qty, setQty] = useState(1);
   const [perDay, setPerDay] = useState(false);
@@ -92,8 +105,8 @@ function ListCard({
 
   function moveItem(idx: number, dir: -1 | 1) {
     const j = idx + dir;
-    if (j < 0 || j >= list.items.length) return;
-    const ids = list.items.map((i) => i.id);
+    if (j < 0 || j >= items.length) return;
+    const ids = items.map((i) => i.id);
     [ids[idx], ids[j]] = [ids[j], ids[idx]];
     run(() => api("/api/reorder", "POST", { kind: "list_items", ids }));
   }
@@ -102,7 +115,7 @@ function ListCard({
     <section className="card overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-4 py-2.5">
         <Chip icon={list.icon} name={list.name} color={list.color} />
-        <span className="text-[12px] text-[var(--muted)]">{list.items.length} items</span>
+        <span className="text-[12px] text-[var(--muted)]">{items.length} items</span>
         <div className="ml-auto flex items-center">
           <button className="icon-btn" disabled={first} onClick={() => onMove(-1)} aria-label="Move list up">↑</button>
           <button className="icon-btn" disabled={last} onClick={() => onMove(1)} aria-label="Move list down">↓</button>
@@ -113,14 +126,15 @@ function ListCard({
         </div>
       </div>
       <ul>
-        {list.items.map((i, idx) => (
+        {items.map((i, idx) => (
           <ItemRow
             key={i.id}
             item={i}
             first={idx === 0}
-            last={idx === list.items.length - 1}
+            last={idx === items.length - 1}
             onMove={(d) => moveItem(idx, d)}
             run={run}
+            onSwipeDelete={() => onSwipeDelete(i.id, i.name)}
           />
         ))}
       </ul>
@@ -134,7 +148,7 @@ function ListCard({
         }}
       >
         <input className="field min-w-0 flex-1 basis-36 !bg-[var(--card)]" placeholder="Add item…" value={name} onChange={(e) => setName(e.target.value)} aria-label={`New item for ${list.name}`} />
-        <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={setPerDay} compact />
+        <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={(b) => { setPerDay(b); if (!b) setQty((q) => Math.max(1, Math.ceil(q))); }} compact />
         <button className="btn btn-sm" disabled={!name.trim()}>Add</button>
       </form>
     </section>
@@ -142,8 +156,11 @@ function ListCard({
 }
 
 function ItemRow({
-  item, first, last, onMove, run,
-}: { item: ListItem; first: boolean; last: boolean; onMove: (d: -1 | 1) => void; run: (fn: () => Promise<unknown>) => Promise<void> }) {
+  item, first, last, onMove, run, onSwipeDelete,
+}: {
+  item: ListItem; first: boolean; last: boolean; onMove: (d: -1 | 1) => void;
+  run: (fn: () => Promise<unknown>) => Promise<void>; onSwipeDelete: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(item.name);
   const [qty, setQty] = useState(item.qty);
@@ -162,7 +179,7 @@ function ItemRow({
           }}
         >
           <input className="field min-w-0 flex-1 basis-36" value={name} onChange={(e) => setName(e.target.value)} autoFocus aria-label="Name" />
-          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={setPerDay} />
+          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={(b) => { setPerDay(b); if (!b) setQty((q) => Math.max(1, Math.ceil(q))); }} />
           <input className="field basis-full" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" aria-label="Note" />
           <div className="flex w-full justify-between gap-2">
             <button type="button" className="btn btn-sm btn-danger" onClick={() => run(() => api(`/api/list-items/${item.id}`, "DELETE"))}>Delete</button>
@@ -176,7 +193,8 @@ function ItemRow({
     );
   }
   return (
-    <li className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-1.5">
+    <SwipeRow label={item.name} onDelete={onSwipeDelete} className="border-b border-[var(--line)]">
+     <div className="flex items-center gap-2 px-4 py-1.5">
       <button className="min-w-0 flex-1 py-1 text-left" onClick={() => setEditing(true)}>
         <span className="text-[15px]">{item.name}</span>
         {qtyLabel(item.qty, item.perDay) && (
@@ -186,7 +204,8 @@ function ItemRow({
       </button>
       <button className="icon-btn" disabled={first} onClick={() => onMove(-1)} aria-label={`Move ${item.name} up`}>↑</button>
       <button className="icon-btn" disabled={last} onClick={() => onMove(1)} aria-label={`Move ${item.name} down`}>↓</button>
-    </li>
+     </div>
+    </SwipeRow>
   );
 }
 

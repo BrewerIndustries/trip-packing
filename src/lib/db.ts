@@ -7,8 +7,9 @@ import {
   type ListItem, type ListType, type Trip, type TripItem, type TripList,
   type TripSummary, type TripType,
 } from "./types";
-import { isIsoDate, packQty, tripDays } from "./trip-math";
+import { countOf, isIsoDate, packQty, perDayOf, tripDays } from "./trip-math";
 import { seed } from "./seed";
+import { suggestFor, type SuggestTrip, type Suggestion } from "./suggest";
 
 const DB_PATH = process.env.PACKING_DB_PATH ?? join(process.cwd(), "data", "packing.db");
 
@@ -98,6 +99,19 @@ function init(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_trip_items_trip ON trip_items(trip_id);
     -- Lists the user deliberately removed from a trip, so sync stops offering them.
+    -- Suggestions the user waved away on a trip (by normalised item name).
+    CREATE TABLE IF NOT EXISTS trip_dismissed_suggestions (
+      trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      key     TEXT NOT NULL,
+      PRIMARY KEY (trip_id, key)
+    );
+    -- Master-list items the user deleted from a trip: "Pull in updates" must
+    -- not put them back (it only adds items the trip has never had).
+    CREATE TABLE IF NOT EXISTS trip_removed_items (
+      trip_id        TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      source_item_id TEXT NOT NULL REFERENCES list_items(id) ON DELETE CASCADE,
+      PRIMARY KEY (trip_id, source_item_id)
+    );
     CREATE TABLE IF NOT EXISTS trip_dismissed_lists (
       trip_id      TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
       list_type_id TEXT NOT NULL REFERENCES list_types(id) ON DELETE CASCADE,
@@ -122,10 +136,6 @@ export function getDb(): Database.Database {
 const now = () => new Date().toISOString();
 function text(v: unknown, max = 200): string {
   return typeof v === "string" ? v.trim().slice(0, max) : "";
-}
-function qtyOf(v: unknown, fallback = 1): number {
-  const n = Math.round(Number(v));
-  return Number.isFinite(n) && n >= 1 ? Math.min(n, 999) : fallback;
 }
 function dateOrNull(v: unknown): string | null {
   return isIsoDate(v) ? v : null;
@@ -230,7 +240,8 @@ export function createListItem(listTypeId: string, input: ListItemInput): ListIt
   if (!name) return null;
   if (!getDb().prepare(`SELECT 1 FROM list_types WHERE id = ?`).get(listTypeId)) return null;
   const row: ListItemRow = {
-    id: randomUUID(), list_type_id: listTypeId, name, qty: qtyOf(input.qty),
+    id: randomUUID(), list_type_id: listTypeId, name,
+    qty: input.perDay ? perDayOf(input.qty) : countOf(input.qty),
     per_day: input.perDay ? 1 : 0, note: text(input.note, 500),
     position: nextPos("list_items", "list_type_id = ?", [listTypeId]),
   };
@@ -244,12 +255,15 @@ export function createListItem(listTypeId: string, input: ListItemInput): ListIt
 export function updateListItem(id: string, input: ListItemInput): boolean {
   const cur = getDb().prepare(`SELECT * FROM list_items WHERE id = ?`).get(id) as ListItemRow | undefined;
   if (!cur) return false;
+  const perDay = input.perDay !== undefined ? Boolean(input.perDay) : cur.per_day === 1;
+  const raw = input.qty !== undefined ? input.qty : cur.qty;
   getDb()
     .prepare(`UPDATE list_items SET name=?, qty=?, per_day=?, note=? WHERE id=?`)
     .run(
       input.name !== undefined ? text(input.name) || cur.name : cur.name,
-      input.qty !== undefined ? qtyOf(input.qty, cur.qty) : cur.qty,
-      input.perDay !== undefined ? (input.perDay ? 1 : 0) : cur.per_day,
+      // Per day may be fractional; a count is whole (rounded up from a fraction).
+      perDay ? perDayOf(raw, cur.qty) : countOf(Math.ceil(Number(raw)), 1),
+      perDay ? 1 : 0,
       input.note !== undefined ? text(input.note, 500) : cur.note,
       id,
     );
@@ -478,8 +492,10 @@ export function updateTrip(id: string, input: TripInput): boolean {
     // Dates moved → re-scale every per-day item to the new trip length.
     if (start !== cur.start_date || end !== cur.end_date) {
       const days = tripDays(start, end);
-      db.prepare(`UPDATE trip_items SET qty = per_day * ? WHERE trip_id = ? AND per_day IS NOT NULL`)
-        .run(days, id);
+      const rows = db.prepare(`SELECT id, per_day FROM trip_items WHERE trip_id = ? AND per_day IS NOT NULL`)
+        .all(id) as { id: string; per_day: number }[];
+      const upd = db.prepare(`UPDATE trip_items SET qty = ? WHERE id = ?`);
+      for (const r of rows) upd.run(packQty(r.per_day, true, days), r.id);
     }
   })();
   return true;
@@ -523,7 +539,7 @@ export function duplicateTrip(id: string, input: TripInput): string | null {
                                 note,packed,position,createdAt) VALUES (?,?,?,?,?,?,?,?,0,?,?)`);
     for (const i of items) {
       insItem.run(randomUUID(), newId, i.trip_list_id ? listMap.get(i.trip_list_id) ?? null : null,
-        i.source_item_id, i.name, i.per_day != null ? i.per_day * days : i.qty, i.per_day, i.note,
+        i.source_item_id, i.name, i.per_day != null ? packQty(i.per_day, true, days) : i.qty, i.per_day, i.note,
         i.position, ts);
     }
   })();
@@ -599,8 +615,9 @@ export function previewSync(tripId: string): SyncPreview | null {
     .prepare(`SELECT * FROM trip_lists WHERE trip_id = ? AND list_type_id IS NOT NULL ORDER BY position`)
     .all(tripId) as TripListRow[];
   const have = new Set(
-    (db.prepare(`SELECT source_item_id FROM trip_items WHERE trip_id = ? AND source_item_id IS NOT NULL`)
-      .all(tripId) as { source_item_id: string }[]).map((r) => r.source_item_id),
+    (db.prepare(`SELECT source_item_id FROM trip_items WHERE trip_id = ? AND source_item_id IS NOT NULL
+                 UNION SELECT source_item_id FROM trip_removed_items WHERE trip_id = ?`)
+      .all(tripId, tripId) as { source_item_id: string }[]).map((r) => r.source_item_id),
   );
   const masterItems = db.prepare(`SELECT * FROM list_items WHERE list_type_id = ? ORDER BY position, createdAt`);
 
@@ -681,8 +698,8 @@ export function addTripItem(tripId: string, input: TripItemInput): TripItem | nu
     listId = input.tripListId;
   }
   const trip = tripRow(tripId)!;
-  const base = qtyOf(input.qty);
   const perDay = Boolean(input.perDay);
+  const base = perDay ? perDayOf(input.qty) : countOf(input.qty);
   const row: TripItemRow = {
     id: randomUUID(), trip_id: tripId, trip_list_id: listId, source_item_id: null, name,
     qty: perDay ? packQty(base, true, tripDays(trip.start_date, trip.end_date)) : base,
@@ -707,11 +724,11 @@ export function updateTripItem(id: string, input: TripItemInput): TripItem | nul
   let qty = cur.qty;
   let per: number | null = null;
   if (perDay) {
-    per = input.qty !== undefined ? qtyOf(input.qty, cur.per_day ?? cur.qty) : cur.per_day ?? cur.qty;
+    per = input.qty !== undefined ? perDayOf(input.qty, cur.per_day ?? cur.qty) : cur.per_day ?? cur.qty;
     const trip = tripRow(cur.trip_id)!;
     qty = packQty(per, true, tripDays(trip.start_date, trip.end_date));
   } else if (input.qty !== undefined) {
-    qty = qtyOf(input.qty, cur.qty);
+    qty = countOf(input.qty, cur.qty);
   } else if (cur.per_day != null) {
     // Switching per-day → count keeps today's packed quantity as the fixed count.
     qty = cur.qty;
@@ -731,7 +748,19 @@ export function updateTripItem(id: string, input: TripItemInput): TripItem | nul
 }
 
 export function deleteTripItem(id: string): boolean {
-  return getDb().prepare(`DELETE FROM trip_items WHERE id = ?`).run(id).changes > 0;
+  const db = getDb();
+  const cur = db.prepare(`SELECT trip_id, source_item_id FROM trip_items WHERE id = ?`).get(id) as
+    { trip_id: string; source_item_id: string | null } | undefined;
+  if (!cur) return false;
+  db.transaction(() => {
+    // Remember it, so syncing the trip with its lists doesn't bring it back.
+    if (cur.source_item_id) {
+      db.prepare(`INSERT OR IGNORE INTO trip_removed_items (trip_id, source_item_id) VALUES (?, ?)`)
+        .run(cur.trip_id, cur.source_item_id);
+    }
+    db.prepare(`DELETE FROM trip_items WHERE id = ?`).run(id);
+  })();
+  return true;
 }
 
 /** Mark every item on a trip packed / unpacked (e.g. "unpack all" for the return leg). */
@@ -769,4 +798,52 @@ export function promoteTripItem(id: string, listTypeId: string): ListItem | null
 
 function touchTrip(id: string) {
   getDb().prepare(`UPDATE trips SET updatedAt = ? WHERE id = ?`).run(now(), id);
+}
+
+// --- suggestions -------------------------------------------------------------
+
+/** Every trip flattened to what the suggester needs, keyed by id. */
+function suggestTrips(): Map<string, SuggestTrip> {
+  const db = getDb();
+  const trips = db.prepare(`SELECT * FROM trips`).all() as TripRow[];
+  const lists = db.prepare(`SELECT id, trip_id, name FROM trip_lists`).all() as { id: string; trip_id: string; name: string }[];
+  const items = db.prepare(`SELECT trip_id, trip_list_id, name, qty, per_day FROM trip_items`).all() as
+    { trip_id: string; trip_list_id: string | null; name: string; qty: number; per_day: number | null }[];
+  const listName = new Map(lists.map((l) => [l.id, l.name]));
+  const out = new Map<string, SuggestTrip>();
+  for (const t of trips) {
+    out.set(t.id, {
+      id: t.id, name: t.name, destination: t.destination, tripTypeId: t.trip_type_id,
+      tripTypeName: t.trip_type_name, startDate: t.start_date, days: tripDays(t.start_date, t.end_date),
+      listNames: lists.filter((l) => l.trip_id === t.id).map((l) => l.name), items: [],
+    });
+  }
+  for (const i of items) {
+    out.get(i.trip_id)?.items.push({
+      name: i.name, qty: i.per_day ?? i.qty, perDay: i.per_day != null,
+      listName: i.trip_list_id ? listName.get(i.trip_list_id) ?? null : null,
+    });
+  }
+  return out;
+}
+
+export function suggestionsFor(tripId: string): Suggestion[] | null {
+  const all = suggestTrips();
+  const trip = all.get(tripId);
+  if (!trip) return null;
+  const dismissed = (getDb().prepare(`SELECT key FROM trip_dismissed_suggestions WHERE trip_id = ?`)
+    .all(tripId) as { key: string }[]).map((r) => r.key);
+  const masters = (getDb().prepare(`SELECT name FROM list_types`).all() as { name: string }[]).map((r) => r.name);
+  return suggestFor(trip, [...all.values()], dismissed, 12, masters);
+}
+
+export function dismissSuggestion(tripId: string, key: string): boolean {
+  if (!tripRow(tripId) || !key) return false;
+  getDb().prepare(`INSERT OR IGNORE INTO trip_dismissed_suggestions (trip_id, key) VALUES (?, ?)`).run(tripId, key.slice(0, 200));
+  return true;
+}
+
+/** Bring back everything dismissed on a trip. */
+export function resetDismissedSuggestions(tripId: string): number {
+  return getDb().prepare(`DELETE FROM trip_dismissed_suggestions WHERE trip_id = ?`).run(tripId).changes;
 }

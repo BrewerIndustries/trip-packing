@@ -11,10 +11,29 @@ Packing lists by trip type. Part of the Jarvis app family; **tailnet-only**.
 
 - **Lists** (`/lists`): reusable packing lists such as Essentials, Toiletries, Beach and Work.
 - **Count / Per day**: every item has a quantity and one of two modes, on master lists and on
-  trips alike. **Count** is a fixed number: 1 umbrella, 2 swimsuits, however long the trip.
+  trips alike. **Count** is a fixed whole number: 1 umbrella, 2 swimsuits, however long the trip.
   **Per day** is an amount per day, so 1/day of socks on a 4-day trip packs 4, and the number
-  follows the trip if its dates change. On a trip, per-day items show the total plus a "1/day"
-  tag. Switching an item's mode keeps its packed total (8 as a count ↔ 2/day on a 4-day trip).
+  follows the trip if its dates change. **Decimals are allowed**: 0.5/day means one every other
+  day, and the total **rounds up** (0.5/day × 5 days = 3), because one spare beats one short.
+  On a trip, per-day items show the total plus a "0.5/day" tag. Switching an item's mode keeps
+  its packed total (8 as a count ↔ 2/day on a 4-day trip).
+- **Swipe left to delete** any item, on a trip or on a master list. A short swipe reveals a
+  Delete button and a long swipe deletes straight away. Either way the row disappears behind an
+  **Undo** toast for 5 seconds before it's really deleted. A list item you delete from a trip
+  stays gone: "Pull in updates" won't add it back.
+- **💡 Suggested** (on each trip): things this trip seems to be missing, each with a reason and
+  one-tap **+ Add** or **✕** (dismissed for this trip; "Show dismissed" brings them back).
+  - **From your history:** items on your other trips that aren't on this one. Same destination
+    or trip type counts for more, and it needs two trips, or one to the same place, so a one-off
+    doesn't show up. Things you added by hand rank above list items. If 3+ come from a list the
+    trip doesn't have, you get one row: "📋 Beach list: 6 items you took to Cabo last time",
+    with **+ Add list**.
+  - **Common sense:** a built-in catalog gated by the trip: essentials always (charger,
+    toothbrush, meds, ID, per-day underwear/socks), plus length (laundry bag at 4+ days),
+    trip type, list and destination words (beach → sunscreen and swimsuit; ski/winter → gloves;
+    conference → laptop; abroad → passport) and month. Anything already on the trip (matched
+    by name and aliases, plurals folded) is skipped.
+  - The logic is pure and tested: `src/lib/suggest.ts`.
 - **Trip types** (`/trip-types`): Weekend Getaway, Business Trip, and so on. Tap a list's chip
   to mark it as required for that trip type.
 - **Trips** (`/`): pick a trip type and dates. Every required list (plus any extras you add)

@@ -21,10 +21,32 @@ export function tripDays(start: string | null, end: string | null): number {
   return days >= 1 ? days : 1;
 }
 
-/** Quantity to pack for a master item on a trip of `days` days. */
+/**
+ * Quantity to pack. A count is a whole number (min 1). A per-day amount may be
+ * fractional (0.5/day = one every other day); the total rounds UP — better one
+ * spare shirt than one short — and is never below 1.
+ */
 export function packQty(qty: number, perDay: boolean, days: number): number {
-  const base = Math.max(1, Math.round(qty) || 1);
-  return perDay ? base * Math.max(1, days) : base;
+  if (!perDay) return countOf(qty);
+  const total = perDayOf(qty) * Math.max(1, days);
+  return Math.max(1, Math.ceil(total - 1e-9)); // tolerate float noise (0.1 × 30)
+}
+
+/** A whole-number count, 1–999. */
+export function countOf(v: unknown, fallback = 1): number {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 999) : fallback;
+}
+
+/** A per-day amount: up to 2 decimals, 0.1–999. */
+export function perDayOf(v: unknown, fallback = 1): number {
+  const n = Math.round(Number(v) * 100) / 100;
+  return Number.isFinite(n) && n >= 0.1 ? Math.min(n, 999) : fallback;
+}
+
+/** 0.5 → "0.5", 2 → "2", 0.333 → "0.33". */
+export function fmtAmount(n: number): string {
+  return String(Math.round(n * 100) / 100);
 }
 
 /** Local-calendar YYYY-MM-DD for "today" (server TZ for SSR, device TZ in the browser). */

@@ -19,8 +19,15 @@ public DNS or a public route.
   plus lists the trip type now requires). Never remove items or reset packed state.
 - `trip_dismissed_lists` records lists the user removed from a trip so sync won't re-offer
   them. Attaching the list again clears the record.
-- Date maths lives in `src/lib/trip-math.ts` (pure, tested): `tripDays` counts both ends;
-  `packQty` multiplies per-day items.
+- Per-day amounts may be fractional (`perDayOf`: 2 decimals, ≥0.1); counts are whole
+  (`countOf`). `packQty` rounds a per-day total UP (min 1). Always go through these helpers.
+- `trip_removed_items` records list items the user deleted from a trip, so sync never
+  re-adds them.
+- `trip_dismissed_suggestions` (trip, normalised name key) hides suggestions per trip.
+- Date and quantity maths lives in `src/lib/trip-math.ts`; suggestions in `src/lib/suggest.ts`
+  (history + rule catalog, list grouping). Both are pure and tested (`npm test`).
+- UI: `components/swipe.tsx` provides `SwipeRow` (swipe left → Delete) and `useDeferredDelete`
+  (hide now, DELETE after 5 s unless Undo). Undo cancels, it never re-creates.
 
 ## UI
 Server pages read the DB directly and pass the data to client components (`TripsBoard`,

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { countOf, fmtAmount, packQty, perDayOf } from "@/lib/trip-math";
 import { COLORS, COLOR_KEYS, type ColorKey } from "@/lib/types";
 
 export function Modal({
@@ -106,8 +107,9 @@ export function Empty({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Quantity with its mode: "Count" is a fixed number; "Per day" is an amount per
- * day of the trip, so the packed quantity follows the trip's length.
+ * Quantity with its mode: "Count" is a fixed whole number; "Per day" is an
+ * amount per day of the trip (decimals allowed: 0.5 = every other day), so the
+ * packed quantity follows the trip's length (rounded up).
  * `days` (when known) shows what a per-day amount works out to.
  */
 export function QtyField({
@@ -116,6 +118,19 @@ export function QtyField({
   qty: number; perDay: boolean; onQty: (n: number) => void; onPerDay: (b: boolean) => void;
   days?: number; compact?: boolean;
 }) {
+  // Keep the raw text so "0." or "1.2" can be typed without being clamped mid-word.
+  const [text, setText] = useState(fmtAmount(qty));
+  const [shown, setShown] = useState(qty);
+  if (qty !== shown) { setShown(qty); setText(fmtAmount(qty)); }
+
+  const commit = (raw: string, mode = perDay) => {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) return;
+    const v = mode ? perDayOf(n, qty) : countOf(n, qty);
+    setShown(v);
+    onQty(v);
+  };
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex rounded-lg bg-[var(--sunk)] p-0.5 text-[13px]" role="radiogroup" aria-label="Quantity type">
@@ -135,23 +150,29 @@ export function QtyField({
         ))}
       </div>
       <input
-        type="number" min={1} max={999}
+        type="text"
+        inputMode={perDay ? "decimal" : "numeric"}
         className={`field !w-16 ${compact ? "!bg-[var(--card)]" : ""}`}
-        value={qty}
-        onChange={(e) => onQty(Math.max(1, Number(e.target.value) || 1))}
+        value={text}
+        onChange={(e) => {
+          const t = e.target.value.replace(perDay ? /[^0-9.]/g : /[^0-9]/g, "");
+          setText(t);
+          commit(t);
+        }}
+        onBlur={() => setText(fmtAmount(shown))}
         aria-label={perDay ? "Quantity per day" : "Quantity"}
       />
       {perDay && (
         <span className="text-[12px] text-[var(--muted)]">
-          per day{days ? ` → ${qty * days} for ${days} day${days === 1 ? "" : "s"}` : ""}
+          per day{days ? ` → ${packQty(shown, true, days)} for ${days} day${days === 1 ? "" : "s"}` : ""}
         </span>
       )}
     </div>
   );
 }
 
-/** "×2" for a count, "2/day" for a per-day amount (nothing for a single item). */
+/** "×2" for a count, "0.5/day" for a per-day amount (nothing for a single item). */
 export function qtyLabel(qty: number, perDay: boolean): string {
-  if (perDay) return `${qty}/day`;
+  if (perDay) return `${fmtAmount(qty)}/day`;
   return qty > 1 ? `×${qty}` : "";
 }
