@@ -663,6 +663,11 @@ export function syncTrip(tripId: string): { items: number; lists: number } | nul
 
 export interface TripItemInput {
   name?: unknown; qty?: unknown; note?: unknown; packed?: unknown; tripListId?: unknown;
+  /**
+   * Quantity mode. true = "per day": `qty` is the per-day amount and the packed
+   * quantity follows the trip's length. false = "count": `qty` is fixed.
+   */
+  perDay?: unknown;
 }
 
 /** Add an ad hoc item. `tripListId` null/omitted → the trip's Extras section. */
@@ -675,9 +680,13 @@ export function addTripItem(tripId: string, input: TripItemInput): TripItem | nu
     if (!db.prepare(`SELECT 1 FROM trip_lists WHERE id = ? AND trip_id = ?`).get(input.tripListId, tripId)) return null;
     listId = input.tripListId;
   }
+  const trip = tripRow(tripId)!;
+  const base = qtyOf(input.qty);
+  const perDay = Boolean(input.perDay);
   const row: TripItemRow = {
     id: randomUUID(), trip_id: tripId, trip_list_id: listId, source_item_id: null, name,
-    qty: qtyOf(input.qty), per_day: null, note: text(input.note, 500), packed: 0,
+    qty: perDay ? packQty(base, true, tripDays(trip.start_date, trip.end_date)) : base,
+    per_day: perDay ? base : null, note: text(input.note, 500), packed: 0,
     position: nextPos("trip_items", "trip_id = ?", [tripId]),
   };
   db.prepare(`INSERT INTO trip_items (id,trip_id,trip_list_id,source_item_id,name,qty,per_day,note,packed,position,createdAt)
@@ -691,13 +700,27 @@ export function updateTripItem(id: string, input: TripItemInput): TripItem | nul
   const db = getDb();
   const cur = db.prepare(`SELECT * FROM trip_items WHERE id = ?`).get(id) as TripItemRow | undefined;
   if (!cur) return null;
-  const qtyChanged = input.qty !== undefined && qtyOf(input.qty, cur.qty) !== cur.qty;
+  // Mode: an explicit perDay wins; otherwise the item keeps the mode it has.
+  // In per-day mode `qty` is the per-day amount and the packed quantity is
+  // derived from the trip's length; in count mode it's the quantity itself.
+  const perDay = input.perDay !== undefined ? Boolean(input.perDay) : cur.per_day != null;
+  let qty = cur.qty;
+  let per: number | null = null;
+  if (perDay) {
+    per = input.qty !== undefined ? qtyOf(input.qty, cur.per_day ?? cur.qty) : cur.per_day ?? cur.qty;
+    const trip = tripRow(cur.trip_id)!;
+    qty = packQty(per, true, tripDays(trip.start_date, trip.end_date));
+  } else if (input.qty !== undefined) {
+    qty = qtyOf(input.qty, cur.qty);
+  } else if (cur.per_day != null) {
+    // Switching per-day → count keeps today's packed quantity as the fixed count.
+    qty = cur.qty;
+  }
   const next: TripItemRow = {
     ...cur,
     name: input.name !== undefined ? text(input.name) || cur.name : cur.name,
-    qty: input.qty !== undefined ? qtyOf(input.qty, cur.qty) : cur.qty,
-    // A hand-edited quantity stops scaling with the trip's dates.
-    per_day: qtyChanged ? null : cur.per_day,
+    qty,
+    per_day: per,
     note: input.note !== undefined ? text(input.note, 500) : cur.note,
     packed: input.packed !== undefined ? (input.packed ? 1 : 0) : cur.packed,
   };
@@ -729,7 +752,11 @@ export function promoteTripItem(id: string, listTypeId: string): ListItem | null
   if (!cur) return null;
   let created: ListItem | null = null;
   db.transaction(() => {
-    created = createListItem(listTypeId, { name: cur.name, qty: cur.qty, note: cur.note });
+    created = createListItem(listTypeId, {
+      name: cur.name, note: cur.note,
+      // Keep the mode: a per-day item is saved as its per-day amount.
+      qty: cur.per_day ?? cur.qty, perDay: cur.per_day != null,
+    });
     if (!created) return;
     const section = db
       .prepare(`SELECT id FROM trip_lists WHERE trip_id = ? AND list_type_id = ?`)

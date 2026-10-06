@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
 import type { ColorKey, ListItem, ListType, TripType } from "@/lib/types";
-import { Chip, ColorPicker, Empty, IconPicker, Label, Modal } from "./ui";
+import { Chip, ColorPicker, Empty, IconPicker, Label, Modal, QtyField, qtyLabel } from "./ui";
 
 export default function ListsEditor({ initial, tripTypes }: { initial: ListType[]; tripTypes: TripType[] }) {
   const [lists, setLists] = useState(initial);
@@ -134,10 +134,7 @@ function ListCard({
         }}
       >
         <input className="field min-w-0 flex-1 basis-36 !bg-[var(--card)]" placeholder="Add item…" value={name} onChange={(e) => setName(e.target.value)} aria-label={`New item for ${list.name}`} />
-        <input type="number" min={1} max={999} className="field !w-16 !bg-[var(--card)]" value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} aria-label="Quantity" />
-        <label className="flex items-center gap-1 text-[13px] text-[var(--muted)]">
-          <input type="checkbox" checked={perDay} onChange={(e) => setPerDay(e.target.checked)} /> per day
-        </label>
+        <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={setPerDay} compact />
         <button className="btn btn-sm" disabled={!name.trim()}>Add</button>
       </form>
     </section>
@@ -165,10 +162,7 @@ function ItemRow({
           }}
         >
           <input className="field min-w-0 flex-1 basis-36" value={name} onChange={(e) => setName(e.target.value)} autoFocus aria-label="Name" />
-          <input type="number" min={1} max={999} className="field !w-16" value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} aria-label="Quantity" />
-          <label className="flex items-center gap-1 text-[13px] text-[var(--muted)]">
-            <input type="checkbox" checked={perDay} onChange={(e) => setPerDay(e.target.checked)} /> per day
-          </label>
+          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={setPerDay} />
           <input className="field basis-full" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" aria-label="Note" />
           <div className="flex w-full justify-between gap-2">
             <button type="button" className="btn btn-sm btn-danger" onClick={() => run(() => api(`/api/list-items/${item.id}`, "DELETE"))}>Delete</button>
@@ -185,8 +179,8 @@ function ItemRow({
     <li className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-1.5">
       <button className="min-w-0 flex-1 py-1 text-left" onClick={() => setEditing(true)}>
         <span className="text-[15px]">{item.name}</span>
-        {(item.qty > 1 || item.perDay) && (
-          <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">×{item.qty}{item.perDay ? " / day" : ""}</span>
+        {qtyLabel(item.qty, item.perDay) && (
+          <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">{qtyLabel(item.qty, item.perDay)}</span>
         )}
         {item.note && <span className="block truncate text-[12px] text-[var(--muted)]">{item.note}</span>}
       </button>

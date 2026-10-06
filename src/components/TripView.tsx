@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { formatRange, tripDays } from "@/lib/trip-math";
 import type { ListType, Trip, TripItem, TripList } from "@/lib/types";
-import { Chip, Empty, Label, Modal, Progress } from "./ui";
+import { Chip, Empty, Label, Modal, Progress, QtyField } from "./ui";
 import type { SyncPreview } from "@/lib/db";
 
 const EXTRAS = "__extras";
@@ -204,8 +204,12 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
                       </button>
                       <button className="min-w-0 flex-1 py-1 text-left" onClick={() => toggle(i)}>
                         <span className={`text-[15px] ${i.packed ? "packed-name" : ""}`}>{i.name}</span>
-                        {i.qty > 1 && <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">×{i.qty}</span>}
-                        {i.perDay != null && <span className="ml-1 text-[11px] text-[var(--muted)]" title={`${i.perDay} per day`}>/day</span>}
+                        {(i.qty > 1 || i.perDay != null) && <span className="ml-1.5 text-[13px] font-semibold text-[var(--muted)]">×{i.qty}</span>}
+                        {i.perDay != null && (
+                          <span className="ml-1.5 rounded bg-[var(--sunk)] px-1 py-px text-[11px] font-semibold text-[var(--muted)]" title={`${i.perDay} per day × ${days} days`}>
+                            {i.perDay}/day
+                          </span>
+                        )}
                         {i.note && <span className="block truncate text-[12px] text-[var(--muted)]">{i.note}</span>}
                       </button>
                       <button className="icon-btn" onClick={() => setEditingItem(i)} aria-label={`Edit ${i.name}`}>✎</button>
@@ -264,9 +268,13 @@ export default function TripView({ initial, listTypes }: { initial: Trip; listTy
   );
 }
 
-function QuickAdd({ trip, onAdd }: { trip: Trip; onAdd: (b: { name: string; qty: number; tripListId: string | null }) => Promise<void> }) {
+function QuickAdd({ trip, onAdd }: {
+  trip: Trip;
+  onAdd: (b: { name: string; qty: number; perDay: boolean; tripListId: string | null }) => Promise<void>;
+}) {
   const [name, setName] = useState("");
   const [qty, setQty] = useState(1);
+  const [perDay, setPerDay] = useState(false);
   const [section, setSection] = useState(EXTRAS);
   return (
     <form
@@ -274,9 +282,10 @@ function QuickAdd({ trip, onAdd }: { trip: Trip; onAdd: (b: { name: string; qty:
       onSubmit={async (e) => {
         e.preventDefault();
         if (!name.trim()) return;
-        await onAdd({ name, qty, tripListId: section === EXTRAS ? null : section });
+        await onAdd({ name, qty, perDay, tripListId: section === EXTRAS ? null : section });
         setName("");
         setQty(1);
+        setPerDay(false);
       }}
     >
       <input
@@ -286,15 +295,16 @@ function QuickAdd({ trip, onAdd }: { trip: Trip; onAdd: (b: { name: string; qty:
         onChange={(e) => setName(e.target.value)}
         aria-label="New item"
       />
-      <input
-        type="number" min={1} max={999} className="field !w-16" value={qty}
-        onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} aria-label="Quantity"
-      />
       <select className="field !w-auto max-w-[40%]" value={section} onChange={(e) => setSection(e.target.value)} aria-label="Section">
         <option value={EXTRAS}>✨ Extras</option>
         {trip.lists.map((l) => <option key={l.id} value={l.id}>{l.icon} {l.name}</option>)}
       </select>
-      <button className="btn btn-primary" disabled={!name.trim()}>Add</button>
+      <div className="flex basis-full items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={setPerDay} days={tripDays(trip.startDate, trip.endDate)} />
+        </div>
+        <button className="btn btn-primary self-start" disabled={!name.trim()}>Add</button>
+      </div>
     </form>
   );
 }
@@ -306,8 +316,17 @@ function ItemModal({
   onDone: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const [name, setName] = useState(item.name);
-  const [qty, setQty] = useState(item.qty);
+  const [perDay, setPerDay] = useState(item.perDay != null);
+  const [qty, setQty] = useState(item.perDay ?? item.qty);
   const [note, setNote] = useState(item.note);
+  const days = tripDays(trip.startDate, trip.endDate);
+  // Flipping the mode converts the number so the packed total stays put:
+  // 8 (count) on a 4-day trip ↔ 2 per day.
+  const switchMode = (toPerDay: boolean) => {
+    if (toPerDay === perDay) return;
+    setQty((q) => (toPerDay ? Math.max(1, Math.round(q / days)) : q * days));
+    setPerDay(toPerDay);
+  };
   const section = trip.lists.find((l) => l.id === item.tripListId);
   const [promoteTo, setPromoteTo] = useState(section?.listTypeId ?? listTypes[0]?.id ?? "");
 
@@ -317,20 +336,18 @@ function ItemModal({
         className="space-y-3"
         onSubmit={(e) => {
           e.preventDefault();
-          onDone(() => api(`/api/trip-items/${item.id}`, "PATCH", { name, qty, note }));
+          onDone(() => api(`/api/trip-items/${item.id}`, "PATCH", { name, qty, perDay, note }));
         }}
       >
         <label className="block"><Label>Name</Label>
           <input className="field" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
         </label>
-        <label className="block"><Label>Quantity</Label>
-          <input type="number" min={1} max={999} className="field" value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
-          {item.perDay != null && (
-            <span className="mt-1 block text-[12px] text-[var(--muted)]">
-              {item.perDay}/day × trip length. Changing it fixes the quantity for this trip.
-            </span>
-          )}
-        </label>
+        <div><Label>Quantity</Label>
+          <QtyField qty={qty} perDay={perDay} onQty={setQty} onPerDay={switchMode} days={days} />
+          <span className="mt-1 block text-[12px] text-[var(--muted)]">
+            {perDay ? "Follows the trip's length — changing the dates updates it." : "Stays the same however long the trip is."}
+          </span>
+        </div>
         <label className="block"><Label>Note</Label>
           <input className="field" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" />
         </label>

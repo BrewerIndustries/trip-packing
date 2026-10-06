@@ -104,3 +104,54 @@ export function Empty({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+/**
+ * Quantity with its mode: "Count" is a fixed number; "Per day" is an amount per
+ * day of the trip, so the packed quantity follows the trip's length.
+ * `days` (when known) shows what a per-day amount works out to.
+ */
+export function QtyField({
+  qty, perDay, onQty, onPerDay, days, compact,
+}: {
+  qty: number; perDay: boolean; onQty: (n: number) => void; onPerDay: (b: boolean) => void;
+  days?: number; compact?: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex rounded-lg bg-[var(--sunk)] p-0.5 text-[13px]" role="radiogroup" aria-label="Quantity type">
+        {([["Count", false], ["Per day", true]] as const).map(([label, v]) => (
+          <button
+            key={label}
+            type="button"
+            role="radio"
+            aria-checked={perDay === v}
+            onClick={() => onPerDay(v)}
+            className={`rounded-md px-2.5 py-1 font-semibold ${
+              perDay === v ? "bg-[var(--card)] shadow-sm" : "text-[var(--muted)]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <input
+        type="number" min={1} max={999}
+        className={`field !w-16 ${compact ? "!bg-[var(--card)]" : ""}`}
+        value={qty}
+        onChange={(e) => onQty(Math.max(1, Number(e.target.value) || 1))}
+        aria-label={perDay ? "Quantity per day" : "Quantity"}
+      />
+      {perDay && (
+        <span className="text-[12px] text-[var(--muted)]">
+          per day{days ? ` → ${qty * days} for ${days} day${days === 1 ? "" : "s"}` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** "×2" for a count, "2/day" for a per-day amount (nothing for a single item). */
+export function qtyLabel(qty: number, perDay: boolean): string {
+  if (perDay) return `${qty}/day`;
+  return qty > 1 ? `×${qty}` : "";
+}

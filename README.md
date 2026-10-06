@@ -10,18 +10,20 @@ Packing lists by trip type. Part of the Jarvis app family; **tailnet-only**.
 ## How it works
 
 - **Lists** (`/lists`): reusable packing lists such as Essentials, Toiletries, Beach and Work.
-  Each item has a quantity, and you can mark it **per day**, meaning it's multiplied by the
-  trip length (socks, underwear).
+- **Count / Per day**: every item has a quantity and one of two modes, on master lists and on
+  trips alike. **Count** is a fixed number: 1 umbrella, 2 swimsuits, however long the trip.
+  **Per day** is an amount per day, so 1/day of socks on a 4-day trip packs 4, and the number
+  follows the trip if its dates change. On a trip, per-day items show the total plus a "1/day"
+  tag. Switching an item's mode keeps its packed total (8 as a count ↔ 2/day on a 4-day trip).
 - **Trip types** (`/trip-types`): Weekend Getaway, Business Trip, and so on. Tap a list's chip
   to mark it as required for that trip type.
 - **Trips** (`/`): pick a trip type and dates. Every required list (plus any extras you add)
   is **copied** into the trip as its own checklist.
   - Check items off. The progress bar fills, and "Hide packed" shows only what's left.
-  - **Ad hoc items** go into the trip's ✨ Extras section, or into any section. In an item's
+  - **Ad hoc items** go into the trip's ✨ Extras section, or into any section, as a Count or Per day. In an item's
     edit sheet, **Save for future trips** copies it into a master list.
   - **Add or remove a whole list** on one trip. Your master lists don't change.
-  - **Change the dates** and per-day items re-scale. An item whose quantity you edited by
-    hand keeps that quantity.
+  - **Change the dates** and per-day items re-scale. Count items never change.
   - **Pull in updates**: because trips are snapshots, editing a master list later never
     rewrites a trip. If a trip's lists have grown since it was made (or its trip type now
     requires another list), a banner offers to add the new items. It only ever adds, and it
