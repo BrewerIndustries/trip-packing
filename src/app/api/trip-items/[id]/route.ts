@@ -5,7 +5,8 @@ import { deleteTripItem, updateTripItem } from "@/lib/db";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// PATCH { name?, qty?, note?, packed? }
+// PATCH { name?, qty?, perDay?, note?, packed? } — perDay switches Count ↔ Per day;
+// in per-day mode qty is the per-day amount.
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   const b = await body(req);
   if (!b) return bad("invalid JSON body");

@@ -9,8 +9,11 @@ public DNS or a public route.
   `trip_type_lists` (the "required lists" matrix).
 - `trips` → `trip_lists` (section **snapshots**: name, icon and color copied; `list_type_id` is
   SET NULL if the master is deleted) → `trip_items` (`source_item_id` links to the master item;
-  null = ad hoc; `trip_list_id` null = the Extras section; `per_day` = base qty when scaling,
-  nulled when the user hand-edits qty).
+  null = ad hoc; `trip_list_id` null = the Extras section). **Count vs Per day:** `per_day` NULL =
+  Count (qty fixed); non-null = Per day (`per_day` is the per-day amount and `qty` is derived as
+  per_day × tripDays). The API's `perDay` flag picks the mode, and in per-day mode `qty` means
+  the per-day amount. Switching to Count keeps the current packed total. The UI control is
+  `QtyField` in components/ui.tsx.
 - **Snapshot rule:** creating a trip or attaching a list COPIES items in. Master edits never
   mutate trips. `previewSync`/`syncTrip` only ADD (missing master items by `source_item_id`,
   plus lists the trip type now requires). Never remove items or reset packed state.
